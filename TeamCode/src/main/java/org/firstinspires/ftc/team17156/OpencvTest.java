@@ -1,5 +1,7 @@
 package org.firstinspires.ftc.team17156;
 
+import android.util.Log;
+
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 
@@ -12,14 +14,24 @@ import org.opencv.imgproc.Imgproc;
 import org.openftc.easyopencv.OpenCvCamera;
 import org.openftc.easyopencv.OpenCvCameraFactory;
 import org.openftc.easyopencv.OpenCvCameraRotation;
-import org.openftc.easyopencv.OpenCvInternalCamera2;
 import org.openftc.easyopencv.OpenCvPipeline;
 
-@TeleOp(name = "OPENCV Test", group = "TEST")
+import com.qualcomm.robotcore.hardware.HardwareMap;
+import org.opencv.core.Core;
+import org.opencv.core.Rect;
+import org.openftc.easyopencv.OpenCvInternalCamera;
+
+/**
+ * OpenCV Using Mean RGB Value to determine number of rings
+ * Could be affected by the environment, need debugging, NOT RELIABLE but it's probably the easiest so far.
+ */
+
+
+@TeleOp(name = "CV_TEST by RGB ", group = "CV")
 public class OpencvTest extends LinearOpMode
 {
 //    OpenCvCamera webcam;
-    OpenCvInternalCamera2 webcam;
+    OpenCvInternalCamera webcam;
 
     @Override
     public void runOpMode()
@@ -41,7 +53,7 @@ public class OpencvTest extends LinearOpMode
 //        webcam = OpenCvCameraFactory.getInstance().createWebcam(hardwareMap.get(WebcamName.class, "Webcam 1"));
 
         int cameraMonitorViewId = hardwareMap.appContext.getResources().getIdentifier("cameraMonitorViewId", "id", hardwareMap.appContext.getPackageName());
-        webcam = OpenCvCameraFactory.getInstance().createInternalCamera2(OpenCvInternalCamera2.CameraDirection.BACK, cameraMonitorViewId);
+        webcam = OpenCvCameraFactory.getInstance().createInternalCamera(OpenCvInternalCamera.CameraDirection.BACK, cameraMonitorViewId);
         webcam.openCameraDevice();
 
 
@@ -50,7 +62,8 @@ public class OpencvTest extends LinearOpMode
          * of a frame from the camera. Note that switching pipelines on-the-fly
          * (while a streaming session is in flight) *IS* supported.
          */
-        webcam.setPipeline(new SamplePipeline());
+        RingDetector detector = new RingDetector();
+        webcam.setPipeline(detector);
 
         /*
          * Open the connection to the camera device. New in v1.4.0 is the ability
@@ -161,77 +174,109 @@ public class OpencvTest extends LinearOpMode
      * if you're doing something weird where you do need it synchronized with your OpMode thread,
      * then you will need to account for that accordingly.
      */
-    class SamplePipeline extends OpenCvPipeline
+    static class RingDetector extends OpenCvPipeline
     {
-        boolean viewportPaused;
+        static final Scalar RED = new Scalar(255, 0, 0);
+        static final Scalar GREEN = new Scalar(0, 255, 0);
+        static final Scalar BLUE = new Scalar(0, 0, 255);
 
         /*
-         * NOTE: if you wish to use additional Mat objects in your processing pipeline, it is
-         * highly recommended to declare them here as instance variables and re-use them for
-         * each invocation of processFrame(), rather than declaring them as new local variables
-         * each time through processFrame(). This removes the danger of causing a memory leak
-         * by forgetting to call mat.release(), and it also reduces memory pressure by not
-         * constantly allocating and freeing large chunks of memory.
+         *
+         * X/Y Represents the position of the BB on the screen
+         *
          */
 
-        @Override
-        public Mat processFrame(Mat input)
-        {
-            /*
-             * IMPORTANT NOTE: the input Mat that is passed in as a parameter to this method
-             * will only dereference to the same image for the duration of this particular
-             * invocation of this method. That is, if for some reason you'd like to save a copy
-             * of this particular frame for later use, you will need to either clone it or copy
-             * it to another Mat.
-             */
+        static final Point REGION1_TOPLEFT_ANCHOR_POINT = new Point(160,120);
 
-            /*
-             * Draw a simple box around the middle 1/2 of the entire frame
-             */
+        static final int REGION_WIDTH = 35;
+        static final int REGION_HEIGHT = 25;
+
+        /*
+         * This is really dependent on the phone & even environment so to speak.
+         * We need to debug this variable constantly
+         */
+
+        final int FOUR_RING_THRESHOLD = 120;
+        final int ONE_RING_THRESHOLD = 95;
+
+
+        Point region1_pointA = new Point(
+                REGION1_TOPLEFT_ANCHOR_POINT.x,
+                REGION1_TOPLEFT_ANCHOR_POINT.y);
+        Point region1_pointB = new Point(
+                REGION1_TOPLEFT_ANCHOR_POINT.x + REGION_WIDTH,
+                REGION1_TOPLEFT_ANCHOR_POINT.y + REGION_HEIGHT);
+
+        Mat region1_Cb;
+        Mat YCrCb = new Mat();
+        Mat Cb = new Mat();
+        int avg1;
+
+        // Volatile since accessed by OpMode thread without synchronization
+        private RingPosition position = RingPosition.FOUR;
+
+        void inputToCb(Mat input)
+        {
+            Imgproc.cvtColor(input, YCrCb, Imgproc.COLOR_RGB2YCrCb);
+            Core.extractChannel(YCrCb, Cb, 2);
+        }
+
+        @Override
+        public void init(Mat firstFrame) {
+            // This is called before everything, you don't need to worry about overriding the parent method
+        }
+
+        @Override
+        public Mat processFrame(Mat input) {
+            // This is called repeatedly with the new frame each time
+
+//          // Use those only when you center
+//            Point region1_pointA = new Point(
+//                    input.cols()/4f,
+//                    input.rows()/4f
+//            );
+//
+//            Point region1_pointB = new Point(
+//                    input.cols()*(3f/4f),
+//                    input.rows()*(3f/4f)
+//            );
+
+            inputToCb(input);
+            region1_Cb = Cb.submat(new Rect(region1_pointA, region1_pointB));
+            avg1 = (int) Core.mean(region1_Cb).val[0];
+
             Imgproc.rectangle(
                     input,
-                    new Point(
-                            input.cols()/4,
-                            input.rows()/4),
-                    new Point(
-                            input.cols()*(3f/4f),
-                            input.rows()*(3f/4f)),
-                    new Scalar(0, 255, 0), 4);
+                    region1_pointA,
+                    region1_pointB,
+                    GREEN,
+                    1
+            );
 
-            /**
-             * NOTE: to see how to get data from your pipeline to your OpMode as well as how
-             * to change which stage of the pipeline is rendered to the viewport when it is
-             * tapped, please see {@link PipelineStageSwitchingExample}
-             */
+            position = RingPosition.NONE;
+            if (avg1 > FOUR_RING_THRESHOLD){
+                position = RingPosition.FOUR;
+            } else if (avg1 > ONE_RING_THRESHOLD){
+                position = RingPosition.ONE;
+            }
 
+
+            Log.d("asdasd", avg1 + " - " + position.toString());
             return input;
         }
 
-        @Override
-        public void onViewportTapped()
-        {
-            /*
-             * The viewport (if one was specified in the constructor) can also be dynamically "paused"
-             * and "resumed". The primary use case of this is to reduce CPU, memory, and power load
-             * when you need your vision pipeline running, but do not require a live preview on the
-             * robot controller screen. For instance, this could be useful if you wish to see the live
-             * camera preview as you are initializing your robot, but you no longer require the live
-             * preview after you have finished your initialization process; pausing the viewport does
-             * not stop running your pipeline.
-             *
-             * Here we demonstrate dynamically pausing/resuming the viewport when the user taps it
-             */
-
-            viewportPaused = !viewportPaused;
-
-            if(viewportPaused)
-            {
-                webcam.pauseViewport();
-            }
-            else
-            {
-                webcam.resumeViewport();
-            }
+        public int getAnalysis() {
+            return avg1;
         }
+
+        public RingPosition getPosition() {
+            return position;
+        }
+    }
+
+    public enum RingPosition {
+        NONE,
+        FOUR,
+        ONE
     }
 }
